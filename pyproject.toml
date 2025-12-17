@@ -1,14 +1,15 @@
 [tool.poetry]
 name = "pr-splitter-mcp"
-version = "0.1.0"
+version = "1.0.0"
 description = "A MCP server that intelligently splits large PRs into multiple smaller PRs for better code review"
-authors = ["Polly2014 <your.email@example.com>"]
+authors = ["Polly2014 <baoliwang@microsoft.com>"]
 readme = "README.md"
 packages = [{include = "src"}, {include = "server.py"}]
 license = "MIT"
 homepage = "https://github.com/Polly2014/PR-Splitter-MCP"
 repository = "https://github.com/Polly2014/PR-Splitter-MCP"
-keywords = ["mcp", "git", "pr", "pull-request", "code-review", "fastmcp"]
+documentation = "https://github.com/Polly2014/PR-Splitter-MCP#readme"
+keywords = ["mcp", "git", "pr", "pull-request", "code-review", "fastmcp", "azure-devops", "github"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

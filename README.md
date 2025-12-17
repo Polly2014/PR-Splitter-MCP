@@ -1,8 +1,65 @@
 # PR-Splitter-MCP 🔀
 
+[![PyPI version](https://badge.fury.io/py/pr-splitter-mcp.svg)](https://badge.fury.io/py/pr-splitter-mcp)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A powerful Model Context Protocol (MCP) server that intelligently splits large Pull Requests into multiple smaller PRs for better code review and KPI tracking.
 
 **🤝 Designed to work seamlessly with [coding-flow MCP](https://github.com/user/coding-flow)!**
+
+## 📦 Installation
+
+### Via PyPI (Recommended)
+
+```bash
+pip install pr-splitter-mcp
+```
+
+### Via uvx (Quick Start)
+
+```bash
+uvx pr-splitter-mcp
+```
+
+### From Source
+
+```bash
+git clone https://github.com/Polly2014/PR-Splitter-MCP.git
+cd PR-Splitter-MCP
+poetry install
+```
+
+## ⚙️ MCP Configuration
+
+Add to your VS Code MCP settings (`settings.json` or `mcp.json`):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "pr-splitter": {
+        "command": "uvx",
+        "args": ["pr-splitter-mcp"]
+      }
+    }
+  }
+}
+```
+
+Or if installed via pip:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "pr-splitter": {
+        "command": "pr-splitter-mcp"
+      }
+    }
+  }
+}
+```
 
 ## 🎯 Problem Statement
 
