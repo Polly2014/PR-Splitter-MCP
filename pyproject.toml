@@ -1,0 +1,51 @@
+[tool.poetry]
+name = "pr-splitter-mcp"
+version = "0.1.0"
+description = "A MCP server that intelligently splits large PRs into multiple smaller PRs for better code review"
+authors = ["Polly2014 <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "src"}, {include = "server.py"}]
+license = "MIT"
+homepage = "https://github.com/Polly2014/PR-Splitter-MCP"
+repository = "https://github.com/Polly2014/PR-Splitter-MCP"
+keywords = ["mcp", "git", "pr", "pull-request", "code-review", "fastmcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastmcp = ">=2.0.0"
+python-dotenv = ">=1.0.0"
+pydantic = ">=2.5.0"
+gitpython = ">=3.1.0"
+aiofiles = ">=23.0.0"
+httpx = ">=0.25.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+black = "^23.0.0"
+isort = "^5.12.0"
+
+[tool.poetry.scripts]
+pr-splitter-mcp = "server:main"
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
