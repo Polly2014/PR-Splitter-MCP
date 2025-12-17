@@ -2,6 +2,8 @@
 
 A powerful Model Context Protocol (MCP) server that intelligently splits large Pull Requests into multiple smaller PRs for better code review and KPI tracking.
 
+**🤝 Designed to work seamlessly with [coding-flow MCP](https://github.com/user/coding-flow)!**
+
 ## 🎯 Problem Statement
 
 Many companies have PR count requirements as KPIs, and large features often need to be split into multiple smaller PRs for:
@@ -12,6 +14,41 @@ Many companies have PR count requirements as KPIs, and large features often need
 
 **PR-Splitter-MCP** automates this process by analyzing code structure and intelligently splitting changes.
 
+## 🔄 Workflow with coding-flow MCP
+
+The recommended workflow combines PR-Splitter-MCP with coding-flow for optimal results:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        PR Split Workflow                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│  1. coding-flow.get_pr_content(prId)     → Get PR files & changes       │
+│                         ↓                                                │
+│  2. pr-splitter.generate_split_plan_from_pr(files, count, strategy)     │
+│                         ↓                                                │
+│  3. Git operations (create branches, copy files, push)                  │
+│                         ↓                                                │
+│  4. coding-flow.create_draft_pr() × N    → Create sub-PRs               │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Example Conversation
+
+```
+User: Split PR #6243094 into 5 smaller PRs
+
+AI Agent:
+1. Uses coding-flow.get_pr_content() to get 12 changed files
+2. Uses pr-splitter.generate_split_plan_from_pr() to create split plan:
+   - PR 1/5: configs (4 files)
+   - PR 2/5: utils (3 files)
+   - PR 3/5: components (2 files)
+   - PR 4/5: models (2 files)
+   - PR 5/5: inference (1 file)
+3. Creates branches and commits for each split
+4. Uses coding-flow.create_draft_pr() to create 5 draft PRs
+```
+
 ## ✨ Features
 
 - **🔍 Code Analysis**: Analyze code structure, detect modules, and understand dependencies
@@ -20,6 +57,7 @@ Many companies have PR count requirements as KPIs, and large features often need
   - File types
   - Logical groupings
   - Dependency order
+- **🤝 coding-flow Integration**: New `generate_split_plan_from_pr` tool works directly with PR data
 - **🌿 Branch Management**: Automatically create feature branches and sub-branches
 - **📤 Auto Push**: Push all branches to remote repository
 - **📝 PR Creation**: Create draft PRs on Azure DevOps or GitHub
@@ -110,7 +148,46 @@ Add to your VS Code `mcp.json`:
 
 ## 🛠️ MCP Tools
 
-### `check_auth_status`
+### Core Tools (for coding-flow integration)
+
+#### `generate_split_plan_from_pr` ⭐ NEW
+Generate a split plan directly from PR file data (from coding-flow.get_pr_content).
+
+**This is the recommended tool to use with coding-flow MCP!**
+
+```
+Input:
+  - pr_files: List of files from coding-flow.get_pr_content()
+  - target_pr_count: Target number of PRs (default: 5)
+  - strategy: Split strategy (by_module, by_file, by_type, balanced)
+  - base_branch: Base branch for split PRs
+  - branch_prefix: Prefix for branch names
+  - pr_title_prefix: Prefix for PR titles
+
+Output:
+  - plan: { prs: [...], base_branch, branch_prefix }
+  - summary: { total_files, total_lines, files_per_pr, lines_per_pr }
+  - merge_order: Recommended merge sequence
+  - workflow_next_steps: Git commands to execute
+```
+
+#### `generate_pr_descriptions` ⭐ NEW
+Generate detailed PR titles and descriptions for a split plan.
+
+```
+Input:
+  - plan: Split plan from generate_split_plan_from_pr
+  - project_name: Name for PR titles
+  - include_dependencies: Include dependency info
+
+Output:
+  - prs: Enhanced PRs with professional titles and descriptions
+  - ready_for_creation: Boolean indicating readiness
+```
+
+### Analysis Tools
+
+#### `check_auth_status`
 Check authentication and dependency status for PR creation.
 
 ```
@@ -121,7 +198,7 @@ Output:
   - ready: { ado: bool, github: bool }
 ```
 
-### `analyze_code_structure`
+#### `analyze_code_structure`
 Analyze the code structure of a directory or PR.
 
 ```
@@ -135,8 +212,19 @@ Output:
   - dependencies: Dependency graph between files
 ```
 
-### `generate_split_plan`
-Generate an intelligent split plan for the code.
+#### `get_split_strategies`
+Get available split strategies with descriptions and workflow guidance.
+
+```
+Output:
+  - strategies: { by_module, by_file, by_type, balanced }
+  - workflow: Recommended steps with coding-flow
+```
+
+### Planning & Execution Tools
+
+#### `generate_split_plan`
+Generate an intelligent split plan for local code directory.
 
 ```
 Input:
@@ -151,7 +239,7 @@ Output:
   - dependency_order: Recommended merge order
 ```
 
-### `execute_split`
+#### `execute_split`
 Execute the split plan by creating branches and commits.
 
 ```
@@ -167,7 +255,9 @@ Output:
   - status: Execution status
 ```
 
-### `create_ado_pr`
+### PR Creation Tools
+
+#### `create_ado_pr`
 Create a Pull Request in Azure DevOps.
 
 ```
@@ -188,7 +278,7 @@ Output:
   - status: Creation status
 ```
 
-### `create_github_pr`
+#### `create_github_pr`
 Create a Pull Request in GitHub.
 
 ```
@@ -206,7 +296,7 @@ Output:
   - status: Creation status
 ```
 
-### `create_prs_from_plan`
+#### `create_prs_from_plan`
 Batch create PRs from a split plan.
 
 ```
@@ -224,7 +314,42 @@ Output:
   - results: Detailed results per PR
 ```
 
-## 📋 Example Workflow
+## 📋 Example Workflows
+
+### Workflow 1: Split Existing PR (with coding-flow) ⭐ Recommended
+
+```
+User: Split PR #6243094 into 5 PRs targeting user/feature-test
+
+AI Agent + MCP Servers:
+1. coding-flow.get_pr_content(prIdOrUrl="PR#6243094")
+   → Returns 12 changed files with paths and change types
+
+2. pr-splitter.generate_split_plan_from_pr(
+     pr_files=<files from step 1>,
+     target_pr_count=5,
+     strategy="by_module",
+     base_branch="user/feature-test"
+   )
+   → Returns split plan with 5 PRs
+
+3. Git operations:
+   - git checkout -b user/feature-test (base branch)
+   - For each PR in plan:
+     - git checkout -b <branch_name> user/feature-test
+     - git checkout <source_branch> -- <files>
+     - git commit && git push
+
+4. For each PR:
+   coding-flow.create_draft_pr(
+     branchName=<branch>,
+     targetBranch="user/feature-test",
+     title=<title>,
+     description=<description>
+   )
+```
+
+### Workflow 2: Split Local Code
 
 ```
 User: Split my code into 8 PRs

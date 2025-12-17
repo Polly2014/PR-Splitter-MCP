@@ -1,11 +1,22 @@
 """
 PR-Splitter-MCP Server
 A FastMCP-based server for intelligently splitting large PRs into smaller ones.
+
+Designed to work seamlessly with coding-flow MCP:
+- coding-flow: get_pr_content, create_draft_pr (ADO operations)
+- pr-splitter: analyze, plan, execute split (split logic)
+
+Usage Flow:
+1. coding-flow.get_pr_content() → Get PR files
+2. pr-splitter.generate_split_plan_from_pr() → Generate split plan from PR data
+3. Git operations (create branches, copy files)
+4. coding-flow.create_draft_pr() → Create PRs
 """
 
 import asyncio
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -64,6 +75,207 @@ class PRSplitterMCPServer:
         self._register_tools()
         
         logger.info("PR-Splitter MCP Server initialized")
+    
+    def _categorize_files(self, files: List[Dict[str, Any]]) -> Dict[str, List[Dict]]:
+        """Categorize files by module/directory and type."""
+        categorized = {
+            "configs": [],
+            "docs": [],
+            "modules": {},  # module_name -> files
+            "other": []
+        }
+        
+        config_patterns = ['.yaml', '.yml', '.json', '.toml', '.ini', '.env', '.cfg']
+        doc_patterns = ['.md', '.rst', '.txt', 'README', 'LICENSE', 'CHANGELOG']
+        
+        for f in files:
+            path = f.get("path", "")
+            basename = os.path.basename(path)
+            
+            # Check if config file
+            if any(path.endswith(p) for p in config_patterns) or 'config' in path.lower():
+                categorized["configs"].append(f)
+            # Check if doc file
+            elif any(p in basename for p in doc_patterns):
+                categorized["docs"].append(f)
+            # Check module
+            else:
+                parts = path.split('/')
+                if len(parts) > 1:
+                    # Use first significant directory as module
+                    module = parts[0]
+                    # Skip common non-module directories
+                    if module in ['.', '..', 'src', 'lib']:
+                        module = parts[1] if len(parts) > 2 else parts[0]
+                    
+                    if module not in categorized["modules"]:
+                        categorized["modules"][module] = []
+                    categorized["modules"][module].append(f)
+                else:
+                    categorized["other"].append(f)
+        
+        return categorized
+    
+    def _split_pr_by_module(self, categorized: Dict, target_count: int, 
+                            branch_prefix: str, title_prefix: str) -> List[Dict]:
+        """Split files by module/directory."""
+        prs = []
+        pr_index = 1
+        
+        # PR1: Configs and docs (setup)
+        setup_files = categorized["configs"] + categorized["docs"] + categorized["other"]
+        if setup_files:
+            prs.append({
+                "index": pr_index,
+                "name": "configs",
+                "branch_name": f"{branch_prefix}-configs",
+                "title": f"{title_prefix}: Configuration and documentation",
+                "files": [f["path"] for f in setup_files],
+                "description": "Project setup: configs, docs, and root files",
+                "depends_on": []
+            })
+            pr_index += 1
+        
+        # Remaining PRs: By module
+        modules = list(categorized["modules"].items())
+        
+        # If too many modules, combine some
+        if len(modules) > target_count - 1:
+            # Sort by file count, combine smallest
+            modules.sort(key=lambda x: len(x[1]))
+            while len(modules) > target_count - pr_index:
+                small1 = modules.pop(0)
+                small2 = modules.pop(0) if modules else (None, [])
+                combined_name = f"{small1[0]}_{small2[0]}" if small2[0] else small1[0]
+                combined_files = small1[1] + (small2[1] if small2[1] else [])
+                modules.append((combined_name, combined_files))
+                modules.sort(key=lambda x: len(x[1]))
+        
+        for module_name, module_files in modules:
+            prs.append({
+                "index": pr_index,
+                "name": module_name,
+                "branch_name": f"{branch_prefix}-{module_name.replace('/', '-')}",
+                "title": f"{title_prefix}: {module_name} module",
+                "files": [f["path"] for f in module_files],
+                "description": f"Implementation of {module_name} module",
+                "depends_on": [1] if pr_index > 1 else []
+            })
+            pr_index += 1
+        
+        return prs
+    
+    def _split_pr_by_type(self, categorized: Dict, target_count: int,
+                          branch_prefix: str, title_prefix: str) -> List[Dict]:
+        """Split files by type (configs -> code -> docs)."""
+        prs = []
+        pr_index = 1
+        
+        # PR1: Configs
+        if categorized["configs"]:
+            prs.append({
+                "index": pr_index,
+                "name": "configs",
+                "branch_name": f"{branch_prefix}-configs",
+                "title": f"{title_prefix}: Configuration files",
+                "files": [f["path"] for f in categorized["configs"]],
+                "description": "Configuration and setup files",
+                "depends_on": []
+            })
+            pr_index += 1
+        
+        # Middle PRs: Code modules
+        all_code_files = []
+        for module_files in categorized["modules"].values():
+            all_code_files.extend(module_files)
+        all_code_files.extend(categorized["other"])
+        
+        if all_code_files:
+            # Split code files into batches
+            code_pr_count = max(1, target_count - 2)  # Reserve for configs and docs
+            batch_size = max(1, len(all_code_files) // code_pr_count)
+            
+            for i in range(0, len(all_code_files), batch_size):
+                batch = all_code_files[i:i+batch_size]
+                if batch:
+                    prs.append({
+                        "index": pr_index,
+                        "name": f"code-batch-{pr_index}",
+                        "branch_name": f"{branch_prefix}-code-{pr_index}",
+                        "title": f"{title_prefix}: Code batch {pr_index - 1}",
+                        "files": [f["path"] for f in batch],
+                        "description": f"Code implementation batch {pr_index - 1}",
+                        "depends_on": [1] if pr_index > 1 else []
+                    })
+                    pr_index += 1
+        
+        # Last PR: Docs
+        if categorized["docs"]:
+            prs.append({
+                "index": pr_index,
+                "name": "docs",
+                "branch_name": f"{branch_prefix}-docs",
+                "title": f"{title_prefix}: Documentation",
+                "files": [f["path"] for f in categorized["docs"]],
+                "description": "Documentation files",
+                "depends_on": list(range(1, pr_index))
+            })
+        
+        return prs
+    
+    def _split_pr_balanced(self, files: List[Dict], target_count: int,
+                           branch_prefix: str, title_prefix: str) -> List[Dict]:
+        """Split files balancing lines of code."""
+        # Sort files by lines (descending)
+        sorted_files = sorted(files, key=lambda x: x.get("lines", 0), reverse=True)
+        
+        # Use greedy bin packing
+        prs = [{"files": [], "lines": 0} for _ in range(target_count)]
+        
+        for f in sorted_files:
+            # Find bin with minimum lines
+            min_bin = min(prs, key=lambda x: x["lines"])
+            min_bin["files"].append(f)
+            min_bin["lines"] += f.get("lines", 1)
+        
+        # Convert to PR format
+        result = []
+        for i, pr in enumerate(prs, 1):
+            if pr["files"]:
+                result.append({
+                    "index": i,
+                    "name": f"batch-{i}",
+                    "branch_name": f"{branch_prefix}-batch-{i}",
+                    "title": f"{title_prefix}: Batch {i} (~{pr['lines']} lines)",
+                    "files": [f["path"] for f in pr["files"]],
+                    "description": f"Balanced batch {i} with approximately {pr['lines']} lines",
+                    "depends_on": [j for j in range(1, i)]
+                })
+        
+        return result
+    
+    def _split_pr_by_file(self, files: List[Dict], target_count: int,
+                          branch_prefix: str, title_prefix: str) -> List[Dict]:
+        """Split files evenly across PRs."""
+        batch_size = max(1, len(files) // target_count)
+        
+        prs = []
+        for i in range(0, len(files), batch_size):
+            batch = files[i:i+batch_size]
+            pr_index = len(prs) + 1
+            
+            if batch:
+                prs.append({
+                    "index": pr_index,
+                    "name": f"part-{pr_index}",
+                    "branch_name": f"{branch_prefix}-part-{pr_index}",
+                    "title": f"{title_prefix}: Part {pr_index}/{target_count}",
+                    "files": [f["path"] for f in batch],
+                    "description": f"Part {pr_index} of {target_count}",
+                    "depends_on": [j for j in range(1, pr_index)]
+                })
+        
+        return prs
 
     def _register_tools(self):
         """Register all MCP tools."""
@@ -213,7 +425,181 @@ class PRSplitterMCPServer:
                         "use_case": "When you want roughly equal review effort per PR",
                         "example": "1000 lines / 5 PRs = ~200 lines per PR"
                     }
+                },
+                "workflow": {
+                    "description": "Recommended workflow with coding-flow MCP",
+                    "steps": [
+                        "1. coding-flow.get_pr_content(prIdOrUrl) - Get PR files and changes",
+                        "2. pr-splitter.generate_split_plan_from_pr(pr_data) - Generate split plan",
+                        "3. Git operations: create branches, cherry-pick files",
+                        "4. coding-flow.create_draft_pr() for each sub-PR"
+                    ]
                 }
+            }
+        
+        @self.mcp.tool()
+        async def generate_split_plan_from_pr(
+            pr_files: List[Dict[str, Any]],
+            target_pr_count: int = 5,
+            strategy: str = "by_module",
+            base_branch: str = "main",
+            branch_prefix: str = "user/feature",
+            pr_title_prefix: str = "Split PR"
+        ) -> Dict[str, Any]:
+            """
+            Generate a split plan directly from PR file data (from coding-flow.get_pr_content).
+            
+            This is the recommended tool to use with coding-flow MCP:
+            1. Call coding-flow.get_pr_content(prIdOrUrl) to get PR data
+            2. Pass the changedFiles to this tool
+            3. Use the generated plan to create branches and PRs
+            
+            Args:
+                pr_files: List of PR files from coding-flow.get_pr_content()
+                    Each file should have: path, changeType (add/edit/delete), 
+                    Optional: additions, deletions
+                target_pr_count: Target number of PRs to create (default: 5)
+                strategy: Split strategy - by_module, by_file, by_type, balanced
+                base_branch: Base branch for the split PRs
+                branch_prefix: Prefix for generated branch names
+                pr_title_prefix: Prefix for PR titles (e.g., "[Feature 1/5]")
+                
+            Returns:
+                Split plan with:
+                - prs: List of PR definitions (files, title, branch, description)
+                - summary: Statistics
+                - merge_order: Recommended merge sequence
+            """
+            logger.info(f"Generating split plan from PR data: {len(pr_files)} files -> {target_pr_count} PRs")
+            self.stats["plans_generated"] += 1
+            
+            # Convert PR files to internal format
+            files_info = []
+            for f in pr_files:
+                path = f.get("path", f.get("filePath", ""))
+                files_info.append({
+                    "path": path,
+                    "change_type": f.get("changeType", "edit"),
+                    "additions": f.get("additions", 0),
+                    "deletions": f.get("deletions", 0),
+                    "lines": f.get("additions", 0) + f.get("deletions", 0)
+                })
+            
+            # Categorize files
+            categorized = self._categorize_files(files_info)
+            
+            # Generate plan based on strategy
+            prs = []
+            
+            if strategy == "by_module":
+                prs = self._split_pr_by_module(categorized, target_pr_count, branch_prefix, pr_title_prefix)
+            elif strategy == "by_type":
+                prs = self._split_pr_by_type(categorized, target_pr_count, branch_prefix, pr_title_prefix)
+            elif strategy == "balanced":
+                prs = self._split_pr_balanced(files_info, target_pr_count, branch_prefix, pr_title_prefix)
+            else:  # by_file
+                prs = self._split_pr_by_file(files_info, target_pr_count, branch_prefix, pr_title_prefix)
+            
+            # Calculate summary
+            total_files = len(files_info)
+            total_lines = sum(f.get("lines", 0) for f in files_info)
+            
+            return {
+                "status": "success",
+                "plan": {
+                    "target_pr_count": target_pr_count,
+                    "actual_pr_count": len(prs),
+                    "strategy": strategy,
+                    "base_branch": base_branch,
+                    "branch_prefix": branch_prefix,
+                    "prs": prs
+                },
+                "summary": {
+                    "total_files": total_files,
+                    "total_lines": total_lines,
+                    "files_per_pr": total_files / len(prs) if prs else 0,
+                    "lines_per_pr": total_lines / len(prs) if prs else 0
+                },
+                "merge_order": [pr["index"] for pr in prs],
+                "workflow_next_steps": [
+                    f"1. Create base branch '{base_branch}' if not exists",
+                    "2. For each PR in plan:",
+                    f"   a. git checkout -b <branch_name> {base_branch}",
+                    "   b. git checkout <source_branch> -- <files>",
+                    "   c. git commit -m '<pr_title>'",
+                    "   d. git push -u origin <branch_name>",
+                    f"3. Use coding-flow.create_draft_pr() for each branch targeting '{base_branch}'"
+                ]
+            }
+        
+        @self.mcp.tool()
+        async def generate_pr_descriptions(
+            plan: Dict[str, Any],
+            project_name: str = "Project",
+            include_dependencies: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Generate detailed PR titles and descriptions for a split plan.
+            
+            This tool enhances a split plan with professional PR descriptions
+            ready for use with coding-flow.create_draft_pr().
+            
+            Args:
+                plan: Split plan from generate_split_plan_from_pr
+                project_name: Name of the project for PR titles
+                include_dependencies: Include dependency info in descriptions
+                
+            Returns:
+                Enhanced plan with detailed titles and descriptions for each PR.
+            """
+            prs = plan.get("prs", [])
+            total = len(prs)
+            enhanced_prs = []
+            
+            for pr in prs:
+                idx = pr.get("index", 1)
+                files = pr.get("files", [])
+                
+                # Generate title
+                title = f"[{project_name} {idx}/{total}] {pr.get('title', pr.get('name', 'Update'))}"
+                
+                # Generate description
+                file_list = "\n".join([f"- `{f}`" for f in files[:10]])
+                if len(files) > 10:
+                    file_list += f"\n- ... and {len(files) - 10} more files"
+                
+                description = f"""## Summary
+{pr.get('description', 'Part of a split PR series.')}
+
+### Files Changed ({len(files)} files)
+{file_list}
+
+"""
+                if include_dependencies and pr.get("depends_on"):
+                    deps = pr.get("depends_on", [])
+                    description += f"""### Dependencies
+This PR depends on PR(s): {', '.join([f'{d}/{total}' for d in deps])}
+
+"""
+                
+                description += f"""### Review Focus
+- Code correctness
+- Integration points with other parts
+
+---
+*Generated by PR-Splitter-MCP*"""
+                
+                enhanced_prs.append({
+                    **pr,
+                    "title": title,
+                    "description": description
+                })
+            
+            return {
+                "status": "success",
+                "prs": enhanced_prs,
+                "ready_for_creation": True,
+                "usage": "Pass each PR to coding-flow.create_draft_pr() with title and description"
             }
         
         @self.mcp.tool()
