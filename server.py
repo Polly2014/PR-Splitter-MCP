@@ -88,32 +88,62 @@ class PRSplitterMCPServer:
         
         config_patterns = ['.yaml', '.yml', '.json', '.toml', '.ini', '.env', '.cfg']
         doc_patterns = ['.md', '.rst', '.txt', 'README', 'LICENSE', 'CHANGELOG']
+        root_files = ['.gitignore', 'requirements.txt', 'setup.py', 'pyproject.toml']
+        
+        # First pass: find common prefix to strip
+        paths = [f.get("path", "") for f in files]
+        if paths:
+            # Find common directory prefix
+            common_parts = paths[0].split('/')
+            for p in paths[1:]:
+                parts = p.split('/')
+                new_common = []
+                for i, (a, b) in enumerate(zip(common_parts, parts)):
+                    if a == b:
+                        new_common.append(a)
+                    else:
+                        break
+                common_parts = new_common
+            common_prefix = '/'.join(common_parts)
+            if common_prefix:
+                common_prefix += '/'
+        else:
+            common_prefix = ''
         
         for f in files:
             path = f.get("path", "")
             basename = os.path.basename(path)
             
+            # Strip common prefix to get relative path
+            rel_path = path[len(common_prefix):] if path.startswith(common_prefix) else path
+            
+            # Check if root/config file (non-code files)
+            if basename in root_files:
+                categorized["other"].append(f)
             # Check if config file
-            if any(path.endswith(p) for p in config_patterns) or 'config' in path.lower():
+            elif any(path.endswith(p) for p in config_patterns) or 'config' in path.lower():
                 categorized["configs"].append(f)
             # Check if doc file
             elif any(p in basename for p in doc_patterns):
                 categorized["docs"].append(f)
-            # Check module
+            # Check module based on RELATIVE path
             else:
-                parts = path.split('/')
+                parts = rel_path.split('/')
                 if len(parts) > 1:
-                    # Use first significant directory as module
+                    # Use first directory in relative path as module
                     module = parts[0]
-                    # Skip common non-module directories
-                    if module in ['.', '..', 'src', 'lib']:
-                        module = parts[1] if len(parts) > 2 else parts[0]
                     
                     if module not in categorized["modules"]:
                         categorized["modules"][module] = []
                     categorized["modules"][module].append(f)
                 else:
-                    categorized["other"].append(f)
+                    # Root-level code files go to "core" module
+                    if path.endswith('.py') or path.endswith('.js') or path.endswith('.ts'):
+                        if "core" not in categorized["modules"]:
+                            categorized["modules"]["core"] = []
+                        categorized["modules"]["core"].append(f)
+                    else:
+                        categorized["other"].append(f)
         
         return categorized
     
@@ -140,11 +170,14 @@ class PRSplitterMCPServer:
         # Remaining PRs: By module
         modules = list(categorized["modules"].items())
         
+        # Calculate remaining slots for modules
+        remaining_slots = target_count - pr_index + 1
+        
         # If too many modules, combine some
-        if len(modules) > target_count - 1:
+        if len(modules) > remaining_slots:
             # Sort by file count, combine smallest
             modules.sort(key=lambda x: len(x[1]))
-            while len(modules) > target_count - pr_index:
+            while len(modules) > remaining_slots:
                 small1 = modules.pop(0)
                 small2 = modules.pop(0) if modules else (None, [])
                 combined_name = f"{small1[0]}_{small2[0]}" if small2[0] else small1[0]
@@ -440,7 +473,7 @@ class PRSplitterMCPServer:
         
         @self.mcp.tool()
         async def generate_split_plan_from_pr(
-            pr_files: List[Dict[str, Any]],
+            pr_files: list,
             target_pr_count: int = 5,
             strategy: str = "by_module",
             base_branch: str = "main",
