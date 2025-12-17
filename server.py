@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from src.analyzer import CodeAnalyzer
 from src.splitter import SplitPlanner, SplitStrategy
 from src.git_manager import GitManager
+from src.pr_creator import PRCreator
 
 # Load environment variables
 load_dotenv('config.env')
@@ -48,13 +49,15 @@ class PRSplitterMCPServer:
         self.analyzer = CodeAnalyzer()
         self.planner = SplitPlanner()
         self.git_manager = GitManager()
+        self.pr_creator = PRCreator()
         
         # Server statistics
         self.stats = {
             "start_time": datetime.now(),
             "analyses_performed": 0,
             "plans_generated": 0,
-            "splits_executed": 0
+            "splits_executed": 0,
+            "prs_created": 0
         }
         
         # Register tools
@@ -227,8 +230,184 @@ class PRSplitterMCPServer:
                 "uptime_formatted": str(uptime),
                 "analyses_performed": self.stats["analyses_performed"],
                 "plans_generated": self.stats["plans_generated"],
-                "splits_executed": self.stats["splits_executed"]
+                "splits_executed": self.stats["splits_executed"],
+                "prs_created": self.stats["prs_created"]
             }
+        
+        @self.mcp.tool()
+        async def check_auth_status() -> Dict[str, Any]:
+            """
+            Check authentication and dependency status for PR creation.
+            
+            This tool verifies:
+            - Azure DevOps: AzureCliCredential (from `az login`)
+            - GitHub: Token from gh auth or GITHUB_TOKEN env var
+            - Required Python packages
+            
+            Returns:
+                Comprehensive status of authentication and dependencies.
+            """
+            ado_status = self.pr_creator.check_ado_auth()
+            github_status = self.pr_creator.check_github_auth()
+            deps_status = self.pr_creator.check_dependencies()
+            
+            return {
+                "azure_devops": {
+                    "authenticated": ado_status.get("available", False),
+                    "method": ado_status.get("method"),
+                    "message": ado_status.get("message") or ado_status.get("error"),
+                    "how_to_fix": ado_status.get("how_to_fix")
+                },
+                "github": {
+                    "authenticated": github_status.get("available", False),
+                    "method": github_status.get("method"),
+                    "message": github_status.get("message") or github_status.get("error"),
+                    "how_to_fix": github_status.get("how_to_fix")
+                },
+                "dependencies": deps_status,
+                "ready": {
+                    "ado": ado_status.get("available", False) and deps_status.get("installed", {}).get("azure-devops", False),
+                    "github": github_status.get("available", False) and deps_status.get("installed", {}).get("PyGithub", False)
+                }
+            }
+        
+        @self.mcp.tool()
+        async def create_ado_pr(
+            org_url: str,
+            project: str,
+            repo: str,
+            source_branch: str,
+            target_branch: str,
+            title: str,
+            description: str = "",
+            draft: bool = True,
+            work_item_id: Optional[str] = None
+        ) -> Dict[str, Any]:
+            """
+            Create a Pull Request in Azure DevOps using native SDK.
+            
+            Authentication: Uses AzureCliCredential (from `az login`).
+            Same authentication pattern as coding-flow - no manual token needed!
+            
+            Args:
+                org_url: Azure DevOps organization URL (e.g., https://dev.azure.com/your-org)
+                project: Project name
+                repo: Repository name
+                source_branch: Source branch name
+                target_branch: Target branch name
+                title: PR title
+                description: PR description (optional)
+                draft: Create as draft PR (default: True)
+                work_item_id: Optional ADO work item ID to link
+                
+            Returns:
+                PR creation result with PR ID and URL.
+            """
+            logger.info(f"Creating ADO PR: {source_branch} -> {target_branch}")
+            
+            result = self.pr_creator.create_ado_pr(
+                org_url=org_url,
+                project=project,
+                repo=repo,
+                source_branch=source_branch,
+                target_branch=target_branch,
+                title=title,
+                description=description,
+                draft=draft,
+                work_item_id=work_item_id
+            )
+            
+            if result.status == "success":
+                self.stats["prs_created"] += 1
+            
+            return result.to_dict()
+        
+        @self.mcp.tool()
+        async def create_github_pr(
+            repo: str,
+            source_branch: str,
+            target_branch: str = "main",
+            title: str = "",
+            body: str = "",
+            draft: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Create a Pull Request in GitHub using native SDK.
+            
+            Authentication: Uses token from `gh auth login` or GITHUB_TOKEN env var.
+            Same authentication pattern as coding-flow - no manual token needed!
+            
+            Args:
+                repo: Repository in format "owner/repo"
+                source_branch: Source branch name
+                target_branch: Target branch name (default: main)
+                title: PR title (default: branch name)
+                body: PR body/description (optional)
+                draft: Create as draft PR (default: True)
+                
+            Returns:
+                PR creation result with PR ID and URL.
+            """
+            logger.info(f"Creating GitHub PR: {source_branch} -> {target_branch}")
+            
+            result = self.pr_creator.create_github_pr(
+                repo=repo,
+                source_branch=source_branch,
+                target_branch=target_branch,
+                title=title,
+                body=body,
+                draft=draft
+            )
+            
+            if result.status == "success":
+                self.stats["prs_created"] += 1
+            
+            return result.to_dict()
+        
+        @self.mcp.tool()
+        async def create_prs_from_plan(
+            plan: Dict[str, Any],
+            platform: str,
+            repo: str,
+            org_url: Optional[str] = None,
+            project: Optional[str] = None,
+            draft: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Batch create PRs from a split plan.
+            
+            This tool takes a split plan (from generate_split_plan) and creates
+            all the PRs automatically on the specified platform.
+            
+            Authentication: Uses system credentials (az login / gh auth login).
+            
+            Args:
+                plan: Split plan from generate_split_plan (use the "plan" field)
+                platform: Target platform - "ado" for Azure DevOps or "github" for GitHub
+                repo: Repository name
+                    - For GitHub: format "owner/repo" (e.g., "Polly2014/MyRepo")
+                    - For ADO: just repo name (e.g., "xpaytools")
+                org_url: Azure DevOps org URL (required for ADO, e.g., https://msasg.visualstudio.com)
+                project: Azure DevOps project name (required for ADO, e.g., XPay)
+                draft: Create as draft PRs (default: True)
+                
+            Returns:
+                Batch creation results with PR URLs and any errors.
+            """
+            logger.info(f"Creating PRs from plan on {platform}")
+            
+            result = self.pr_creator.create_prs_from_plan(
+                plan=plan,
+                platform=platform,
+                org_url=org_url,
+                project=project,
+                repo=repo,
+                draft=draft
+            )
+            
+            self.stats["prs_created"] += result.get("prs_created", 0)
+            
+            return result
     
     def run(self):
         """Run the MCP server."""

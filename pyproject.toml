@@ -29,6 +29,14 @@ gitpython = ">=3.1.0"
 aiofiles = ">=23.0.0"
 httpx = ">=0.25.0"
 
+# Azure DevOps SDK (for ADO PR creation)
+azure-devops = ">=7.1.0b4"
+azure-identity = ">=1.15.0"
+msrest = ">=0.7.1"
+
+# GitHub SDK (for GitHub PR creation)
+PyGithub = ">=2.1.1"
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
 pytest-asyncio = "^0.21.0"
