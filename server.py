@@ -234,7 +234,7 @@ class PRSplitterMCPServer:
                 if batch:
                     prs.append({
                         "index": pr_index,
-                        "name": f"code-batch-{pr_index}",
+                        "name": f"code-{pr_index}",
                         "branch_name": f"{branch_prefix}-code-{pr_index}",
                         "title": f"{title_prefix}: Code batch {pr_index - 1}",
                         "files": [f["path"] for f in batch],
