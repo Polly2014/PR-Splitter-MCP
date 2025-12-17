@@ -57,7 +57,8 @@ AI Agent:
   - File types
   - Logical groupings
   - Dependency order
-- **🤝 coding-flow Integration**: New `generate_split_plan_from_pr` tool works directly with PR data
+- **🤝 coding-flow Integration**: `generate_split_plan_from_pr` works directly with PR data
+- **📁 Folder Support**: `split_folder_to_plan` and `split_and_push_folder` for local code
 - **🌿 Branch Management**: Automatically create feature branches and sub-branches
 - **📤 Auto Push**: Push all branches to remote repository
 - **📝 PR Creation**: Create draft PRs on Azure DevOps or GitHub
@@ -221,6 +222,50 @@ Output:
   - workflow: Recommended steps with coding-flow
 ```
 
+### Folder-based Split Tools ⭐ NEW
+
+#### `split_folder_to_plan`
+Generate a split plan from a local folder (similar to generate_split_plan_from_pr).
+
+```
+Input:
+  - folder_path: Path to folder containing code to split
+  - target_pr_count: Target number of PRs (default: 5)
+  - strategy: Split strategy (by_module, by_file, by_type, balanced)
+  - base_branch: Base branch for split PRs
+  - branch_prefix: Prefix for branch names
+  - include_patterns: File patterns to include (e.g., ["*.py", "*.js"])
+  - exclude_patterns: File patterns to exclude (e.g., ["__pycache__/*"])
+
+Output:
+  - plan: Split plan with PR definitions
+  - summary: { total_files, total_lines, files_per_pr, lines_per_pr }
+  - workflow_next_steps: Instructions for next steps
+```
+
+#### `split_and_push_folder` ⭐ End-to-End
+All-in-one: Analyze folder, create branches, copy files, commit, and push.
+
+```
+Input:
+  - source_folder: Path to folder containing code
+  - target_repo_path: Path to target git repository
+  - target_pr_count: Target number of PRs (default: 5)
+  - strategy: Split strategy
+  - base_branch: Base branch in target repo
+  - branch_prefix: Prefix for branch names
+  - relative_path_in_repo: Where to put files in repo (e.g., "src/feature/")
+  - include_patterns: File patterns to include
+  - exclude_patterns: File patterns to exclude
+  - dry_run: Preview without changes (default: True)
+  - push: Push branches to remote (default: True)
+
+Output:
+  - plan: The split plan used
+  - branches: Created branches with status
+  - next_steps: How to create the PRs
+```
+
 ### Planning & Execution Tools
 
 #### `generate_split_plan`
@@ -349,7 +394,38 @@ AI Agent + MCP Servers:
    )
 ```
 
-### Workflow 2: Split Local Code
+### Workflow 2: Split Local Folder (End-to-End) ⭐ NEW
+
+```
+User: Split /path/to/my-feature into 5 PRs and push to my-repo
+
+AI Agent + MCP Server:
+1. pr-splitter.split_and_push_folder(
+     source_folder="/path/to/my-feature",
+     target_repo_path="/path/to/my-repo",
+     target_pr_count=5,
+     strategy="by_module",
+     base_branch="user/myname/feature",
+     branch_prefix="user/myname/feature",
+     relative_path_in_repo="src/feature/",
+     dry_run=False,
+     push=True
+   )
+   → Creates 5 branches, copies files, commits, and pushes
+
+2. pr-splitter.create_prs_from_plan(
+     plan=<plan from step 1>,
+     platform="ado",
+     org_url="https://dev.azure.com/myorg",
+     project="MyProject",
+     repo="my-repo"
+   )
+   → Creates 5 draft PRs
+
+Done! 5 PRs created from local folder.
+```
+
+### Workflow 3: Split Local Code (Step by Step)
 
 ```
 User: Split my code into 8 PRs
@@ -358,11 +434,10 @@ User: Split my code into 8 PRs
 
 AI + MCP Server:
 1. check_auth_status → Verify SDK authentication
-2. analyze_code_structure → Understand the code
-3. generate_split_plan → Create optimal split
-4. [User confirms plan]
-5. execute_split → Create branches and push
-6. create_prs_from_plan → Create all PRs at once
+2. split_folder_to_plan → Generate split plan with preview
+3. [User confirms plan]
+4. split_and_push_folder(dry_run=False) → Create branches and push
+5. create_prs_from_plan → Create all PRs at once
 ```
 
 ## 🔄 Authentication Flow

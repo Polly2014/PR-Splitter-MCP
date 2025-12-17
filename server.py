@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -749,6 +750,337 @@ This PR depends on PR(s): {', '.join([f'{d}/{total}' for d in deps])}
                 self.stats["prs_created"] += 1
             
             return result.to_dict()
+        
+        @self.mcp.tool()
+        async def split_folder_to_plan(
+            folder_path: str,
+            target_pr_count: int = 5,
+            strategy: str = "by_module",
+            base_branch: str = "main",
+            branch_prefix: str = "user/feature",
+            pr_title_prefix: str = "Split PR",
+            include_patterns: Optional[List[str]] = None,
+            exclude_patterns: Optional[List[str]] = None
+        ) -> Dict[str, Any]:
+            """
+            Generate a split plan from a local folder (similar to generate_split_plan_from_pr).
+            
+            This tool analyzes a local folder and generates a split plan that can be
+            used with execute_split or manual git operations.
+            
+            Args:
+                folder_path: Path to the folder containing code to split
+                target_pr_count: Target number of PRs to create (default: 5)
+                strategy: Split strategy - by_module, by_file, by_type, balanced
+                base_branch: Base branch for the split PRs
+                branch_prefix: Prefix for generated branch names
+                pr_title_prefix: Prefix for PR titles
+                include_patterns: File patterns to include (e.g., ["*.py", "*.js"])
+                exclude_patterns: File patterns to exclude (e.g., ["__pycache__/*"])
+                
+            Returns:
+                Split plan with:
+                - prs: List of PR definitions (files, title, branch, description)
+                - summary: Statistics
+                - workflow_next_steps: Instructions for next steps
+            """
+            logger.info(f"Generating split plan from folder: {folder_path} -> {target_pr_count} PRs")
+            self.stats["plans_generated"] += 1
+            
+            folder = Path(folder_path)
+            if not folder.exists():
+                return {"status": "error", "message": f"Folder not found: {folder_path}"}
+            
+            # Collect all files
+            files_info = []
+            
+            # Default exclude patterns
+            default_excludes = [
+                '__pycache__', '.git', '.venv', 'venv', 'node_modules',
+                '.pytest_cache', '.mypy_cache', '*.pyc', '*.pyo', '.DS_Store'
+            ]
+            all_excludes = (exclude_patterns or []) + default_excludes
+            
+            for file_path in folder.rglob('*'):
+                if file_path.is_file():
+                    # Get relative path
+                    rel_path = str(file_path.relative_to(folder))
+                    
+                    # Check excludes
+                    skip = False
+                    for pattern in all_excludes:
+                        if pattern in rel_path or file_path.match(pattern):
+                            skip = True
+                            break
+                    if skip:
+                        continue
+                    
+                    # Check includes (if specified)
+                    if include_patterns:
+                        include = False
+                        for pattern in include_patterns:
+                            if file_path.match(pattern):
+                                include = True
+                                break
+                        if not include:
+                            continue
+                    
+                    # Count lines
+                    try:
+                        lines = len(file_path.read_text(encoding='utf-8', errors='ignore').splitlines())
+                    except:
+                        lines = 0
+                    
+                    files_info.append({
+                        "path": rel_path,
+                        "change_type": "add",
+                        "lines": lines,
+                        "additions": lines,
+                        "deletions": 0
+                    })
+            
+            if not files_info:
+                return {"status": "error", "message": "No files found in folder"}
+            
+            # Categorize files
+            categorized = self._categorize_files(files_info)
+            
+            # Generate plan based on strategy
+            prs = []
+            
+            if strategy == "by_module":
+                prs = self._split_pr_by_module(categorized, target_pr_count, branch_prefix, pr_title_prefix)
+            elif strategy == "by_type":
+                prs = self._split_pr_by_type(categorized, target_pr_count, branch_prefix, pr_title_prefix)
+            elif strategy == "balanced":
+                prs = self._split_pr_balanced(files_info, target_pr_count, branch_prefix, pr_title_prefix)
+            else:  # by_file
+                prs = self._split_pr_by_file(files_info, target_pr_count, branch_prefix, pr_title_prefix)
+            
+            total_files = len(files_info)
+            total_lines = sum(f.get("lines", 0) for f in files_info)
+            
+            return {
+                "status": "success",
+                "source_folder": str(folder_path),
+                "plan": {
+                    "target_pr_count": target_pr_count,
+                    "actual_pr_count": len(prs),
+                    "strategy": strategy,
+                    "base_branch": base_branch,
+                    "branch_prefix": branch_prefix,
+                    "prs": prs
+                },
+                "summary": {
+                    "total_files": total_files,
+                    "total_lines": total_lines,
+                    "files_per_pr": round(total_files / len(prs), 1) if prs else 0,
+                    "lines_per_pr": round(total_lines / len(prs), 1) if prs else 0
+                },
+                "merge_order": [pr["index"] for pr in prs],
+                "workflow_next_steps": [
+                    f"1. Ensure target repo has base branch '{base_branch}'",
+                    "2. Use execute_split(plan, source_folder, target_repo, dry_run=False) to create branches",
+                    "3. Or use split_and_push_folder() for end-to-end automation",
+                    "4. Use create_prs_from_plan() or coding-flow.create_draft_pr() to create PRs"
+                ]
+            }
+        
+        @self.mcp.tool()
+        async def split_and_push_folder(
+            source_folder: str,
+            target_repo_path: str,
+            target_pr_count: int = 5,
+            strategy: str = "by_module",
+            base_branch: str = "main",
+            branch_prefix: str = "user/feature",
+            pr_title_prefix: str = "Split PR",
+            relative_path_in_repo: str = "",
+            include_patterns: Optional[List[str]] = None,
+            exclude_patterns: Optional[List[str]] = None,
+            dry_run: bool = True,
+            push: bool = True
+        ) -> Dict[str, Any]:
+            """
+            End-to-end: Analyze folder, create split plan, create branches, and push.
+            
+            This is the all-in-one tool for splitting a local folder into multiple PRs.
+            After running this, you can use create_prs_from_plan() or coding-flow to create the actual PRs.
+            
+            Args:
+                source_folder: Path to the folder containing code to split
+                target_repo_path: Path to the target git repository
+                target_pr_count: Target number of PRs to create (default: 5)
+                strategy: Split strategy - by_module, by_file, by_type, balanced
+                base_branch: Base branch in target repo (will be created if not exists)
+                branch_prefix: Prefix for generated branch names
+                pr_title_prefix: Prefix for PR titles
+                relative_path_in_repo: Where to put files in the target repo (e.g., "src/feature/")
+                include_patterns: File patterns to include
+                exclude_patterns: File patterns to exclude
+                dry_run: If True, preview without making changes (default: True)
+                push: If True, push branches to remote (default: True)
+                
+            Returns:
+                Complete result including:
+                - plan: The split plan used
+                - branches: Created branches with status
+                - next_steps: How to create the PRs
+            """
+            logger.info(f"Split and push: {source_folder} -> {target_repo_path} ({target_pr_count} PRs)")
+            
+            source = Path(source_folder)
+            target = Path(target_repo_path)
+            
+            if not source.exists():
+                return {"status": "error", "message": f"Source folder not found: {source_folder}"}
+            
+            if not target.exists():
+                return {"status": "error", "message": f"Target repo not found: {target_repo_path}"}
+            
+            # Check if target is a git repo
+            if not self.git_manager.is_git_repo(str(target)):
+                return {"status": "error", "message": f"Target is not a git repository: {target_repo_path}"}
+            
+            self.git_manager.repo_path = target.absolute()
+            
+            # Step 1: Generate split plan
+            plan_result = await split_folder_to_plan(
+                folder_path=source_folder,
+                target_pr_count=target_pr_count,
+                strategy=strategy,
+                base_branch=base_branch,
+                branch_prefix=branch_prefix,
+                pr_title_prefix=pr_title_prefix,
+                include_patterns=include_patterns,
+                exclude_patterns=exclude_patterns
+            )
+            
+            if plan_result.get("status") != "success":
+                return plan_result
+            
+            plan = plan_result["plan"]
+            
+            # Adjust file paths if relative_path_in_repo is specified
+            if relative_path_in_repo:
+                for pr in plan["prs"]:
+                    pr["files"] = [os.path.join(relative_path_in_repo, f) for f in pr["files"]]
+            
+            if dry_run:
+                return {
+                    "status": "success",
+                    "dry_run": True,
+                    "plan": plan,
+                    "summary": plan_result["summary"],
+                    "message": "Dry run complete. Set dry_run=False to execute.",
+                    "branches_to_create": [pr["branch_name"] for pr in plan["prs"]],
+                    "next_steps": [
+                        "Review the plan above",
+                        "Run again with dry_run=False to create branches",
+                        "Then use create_prs_from_plan() or coding-flow.create_draft_pr()"
+                    ]
+                }
+            
+            # Step 2: Execute split (create branches, copy files, commit, optionally push)
+            self.stats["splits_executed"] += 1
+            
+            # Ensure base branch exists
+            current_branch = self.git_manager.get_current_branch()
+            checkout_result = self.git_manager.checkout(base_branch)
+            
+            if checkout_result.get("status") == "error":
+                # Try to create base branch from main/master
+                for fallback in ["main", "master", current_branch]:
+                    result = self.git_manager.create_branch(base_branch, fallback)
+                    if result.get("status") == "success":
+                        if push:
+                            self.git_manager.push(base_branch)
+                        break
+            
+            branch_results = []
+            
+            for pr in plan["prs"]:
+                branch_name = pr["branch_name"]
+                files = pr["files"]
+                title = pr.get("title", pr.get("description", "Update"))
+                
+                # Create branch from base
+                branch_result = self.git_manager.create_branch(branch_name, base_branch)
+                if branch_result.get("status") == "error":
+                    branch_results.append({
+                        "branch_name": branch_name,
+                        "status": "error",
+                        "error": branch_result.get("message")
+                    })
+                    continue
+                
+                # Copy files from source to target
+                copied_files = []
+                for file_path in files:
+                    # Handle relative_path_in_repo
+                    if relative_path_in_repo:
+                        src_rel = file_path.replace(relative_path_in_repo, "").lstrip("/")
+                    else:
+                        src_rel = file_path
+                    
+                    src_file = source / src_rel
+                    dst_file = target / file_path
+                    
+                    if src_file.exists():
+                        dst_file.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_file, dst_file)
+                        copied_files.append(file_path)
+                
+                if not copied_files:
+                    branch_results.append({
+                        "branch_name": branch_name,
+                        "status": "warning",
+                        "files_copied": 0,
+                        "error": "No files copied"
+                    })
+                    self.git_manager.checkout(base_branch)
+                    continue
+                
+                # Add, commit
+                self.git_manager.add_files(copied_files)
+                commit_result = self.git_manager.commit(f"feat: {title}")
+                
+                # Push if requested
+                push_result = {"status": "skipped"}
+                if push:
+                    push_result = self.git_manager.push(branch_name)
+                
+                branch_results.append({
+                    "branch_name": branch_name,
+                    "status": "success" if push_result.get("status") in ["success", "skipped"] else "partial",
+                    "files_copied": len(copied_files),
+                    "commit_hash": commit_result.get("commit_hash"),
+                    "pushed": push_result.get("status") == "success"
+                })
+                
+                # Return to base branch
+                self.git_manager.checkout(base_branch)
+            
+            return {
+                "status": "success",
+                "dry_run": False,
+                "source_folder": str(source_folder),
+                "target_repo": str(target_repo_path),
+                "relative_path": relative_path_in_repo,
+                "plan": plan,
+                "summary": plan_result["summary"],
+                "branches": branch_results,
+                "branch_summary": {
+                    "total": len(branch_results),
+                    "successful": len([b for b in branch_results if b["status"] == "success"]),
+                    "failed": len([b for b in branch_results if b["status"] == "error"])
+                },
+                "next_steps": [
+                    "Use create_prs_from_plan(plan, platform, repo, ...) to create all PRs",
+                    "Or use coding-flow.create_draft_pr() for each branch individually",
+                    f"Target each PR to branch: {base_branch}"
+                ]
+            }
         
         @self.mcp.tool()
         async def create_prs_from_plan(
