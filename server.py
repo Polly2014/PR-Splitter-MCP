@@ -473,7 +473,7 @@ class PRSplitterMCPServer:
         
         @self.mcp.tool()
         async def generate_split_plan_from_pr(
-            pr_files: list,
+            pr_files: List[dict],
             target_pr_count: int = 5,
             strategy: str = "by_module",
             base_branch: str = "main",

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pr-splitter-mcp"
-version = "1.0.0"
+version = "1.0.1"
 description = "A MCP server that intelligently splits large PRs into multiple smaller PRs for better code review"
 authors = ["Polly2014 <baoliwang@microsoft.com>"]
 readme = "README.md"
